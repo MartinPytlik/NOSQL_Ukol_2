@@ -1,0 +1,104 @@
+# Docker Compose konfigurace pro Product Catalog aplikaci
+# Obsahuje: PostgreSQL, Redis Stack, Backend (Node.js), Frontend (React)
+
+services:
+  # PostgreSQL databáze pro ukládání produktů
+  postgres:
+    image: postgres:15-alpine
+    container_name: product-catalog-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_DB: product_catalog
+    volumes:
+      # Persistentní úložiště pro data databáze
+      - postgres_data:/var/lib/postgresql/data
+      # Inicializační skripty
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - product-network
+
+  # Redis Stack pro cachování produktových dat
+  redis:
+    image: redis/redis-stack:latest
+    container_name: product-catalog-redis
+    ports:
+      - "6379:6379"      # Redis port
+      - "8001:8001"      # RedisInsight GUI
+    volumes:
+      # Persistentní úložiště pro Redis data
+      - redis_data:/data
+    environment:
+      - REDIS_ARGS=--save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - product-network
+
+  # Backend API (Node.js/Express)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: product-catalog-backend
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      # Připojení k PostgreSQL
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres123
+      DB_NAME: product_catalog
+      # Připojení k Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Expirace cache v sekundách (10 minut)
+      CACHE_TTL: 600
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - product-network
+    restart: unless-stopped
+
+  # Frontend (React)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: product-catalog-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - product-network
+    restart: unless-stopped
+
+# Definice sítě pro komunikaci mezi kontejnery
+networks:
+  product-network:
+    driver: bridge
+
+# Persistentní volumes pro data
+volumes:
+  postgres_data:
+    name: product-catalog-postgres-data
+  redis_data:
+    name: product-catalog-redis-data
+
