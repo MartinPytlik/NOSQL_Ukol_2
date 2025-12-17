@@ -324,5 +324,6 @@ MIT License
 
 ## 👤 Autor
 
-Vytvořeno jako školní projekt pro předmět NSQL.
+Martin Pytlík
+
 
