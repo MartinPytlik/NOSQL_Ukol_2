@@ -189,6 +189,115 @@ router.get('/categories', async (req, res, next) => {
 });
 
 /**
+ * GET /api/products/recommendations/recent
+ * Získá nedávno navštívené produkty uživatele
+ */
+router.get('/recommendations/recent', async (req, res, next) => {
+    try {
+        const { db, redis } = req;
+        const userId = req.headers['x-user-id'] || req.ip || 'anonymous';
+        const limit = parseInt(req.query.limit) || 6;
+
+        // Získání ID nedávno navštívených produktů z Redis
+        const recentProductIds = await getRecentVisits(redis, userId, limit);
+        
+        if (recentProductIds.length === 0) {
+            return res.json({
+                success: true,
+                data: []
+            });
+        }
+
+        // Načtení detailů produktů z databáze
+        const placeholders = recentProductIds.map((_, i) => `$${i + 1}`).join(',');
+        const result = await db.query(
+            `SELECT * FROM products WHERE id IN (${placeholders})`,
+            recentProductIds
+        );
+
+        // Seřazení podle pořadí v recentProductIds
+        const orderedProducts = recentProductIds
+            .map(id => result.rows.find(p => p.id === id))
+            .filter(p => p !== undefined);
+
+        res.json({
+            success: true,
+            data: orderedProducts
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * GET /api/products/recommendations/suggested
+ * Získá doporučené produkty na základě zájmů uživatele
+ */
+router.get('/recommendations/suggested', async (req, res, next) => {
+    try {
+        const { db, redis } = req;
+        const userId = req.headers['x-user-id'] || req.ip || 'anonymous';
+        const limit = parseInt(req.query.limit) || 6;
+
+        // Získání zájmů uživatele (kategorie)
+        const interests = await getUserInterests(redis, userId);
+        
+        // Získání nedávno navštívených produktů pro vyloučení
+        const recentProductIds = await getRecentVisits(redis, userId, 20);
+
+        let products = [];
+
+        if (interests.length > 0) {
+            // Produkty z preferovaných kategorií
+            const topCategories = interests.slice(0, 3).map(i => i.category);
+            const placeholders = topCategories.map((_, i) => `$${i + 1}`).join(',');
+            
+            let query = `SELECT * FROM products WHERE category IN (${placeholders})`;
+            let params = [...topCategories];
+            
+            // Vyloučení nedávno navštívených
+            if (recentProductIds.length > 0) {
+                const excludePlaceholders = recentProductIds.map((_, i) => `$${topCategories.length + i + 1}`).join(',');
+                query += ` AND id NOT IN (${excludePlaceholders})`;
+                params = [...params, ...recentProductIds];
+            }
+            
+            query += ` ORDER BY RANDOM() LIMIT $${params.length + 1}`;
+            params.push(limit);
+            
+            const result = await db.query(query, params);
+            products = result.rows;
+        }
+
+        // Pokud nemáme dost produktů, doplníme náhodnými
+        if (products.length < limit) {
+            const existingIds = [...recentProductIds, ...products.map(p => p.id)];
+            let query = 'SELECT * FROM products';
+            let params = [];
+            
+            if (existingIds.length > 0) {
+                const placeholders = existingIds.map((_, i) => `$${i + 1}`).join(',');
+                query += ` WHERE id NOT IN (${placeholders})`;
+                params = existingIds;
+            }
+            
+            query += ` ORDER BY RANDOM() LIMIT $${params.length + 1}`;
+            params.push(limit - products.length);
+            
+            const result = await db.query(query, params);
+            products = [...products, ...result.rows];
+        }
+
+        res.json({
+            success: true,
+            data: products.slice(0, limit)
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
  * GET /api/products/:id
  * Získá detail produktu podle ID
  * Využívá Redis cache - nejprve se podívá do cache, pak do DB
