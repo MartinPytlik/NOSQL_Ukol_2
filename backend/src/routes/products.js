@@ -11,7 +11,11 @@ const {
     setProductInCache,
     invalidateProductCache,
     getProductListFromCache,
-    setProductListInCache
+    setProductListInCache,
+    trackProductVisit,
+    getRecentVisits,
+    getUserInterests,
+    updateUserInterests
 } = require('../middleware/cache');
 const { createError } = require('../middleware/errorHandler');
 
@@ -196,10 +200,19 @@ router.get('/:id', [
         const { db, redis, cacheStats } = req;
         const productId = parseInt(req.params.id);
 
+        // Získání user ID z IP nebo session
+        const userId = req.headers['x-user-id'] || req.ip || 'anonymous';
+
         // Pokus o získání z cache (Cache-Aside pattern)
         const cached = await getProductFromCache(redis, productId, cacheStats);
         
         if (cached) {
+            // Sledování návštěvy i při cache hit
+            await trackProductVisit(redis, userId, productId);
+            if (cached.data.category) {
+                await updateUserInterests(redis, userId, cached.data.category);
+            }
+            
             return res.json({
                 success: true,
                 fromCache: true,
@@ -224,6 +237,12 @@ router.get('/:id', [
 
         // Uložení do cache pro příští požadavky
         await setProductInCache(redis, productId, product);
+
+        // Sledování návštěvy
+        await trackProductVisit(redis, userId, productId);
+        if (product.category) {
+            await updateUserInterests(redis, userId, product.category);
+        }
 
         res.json({
             success: true,

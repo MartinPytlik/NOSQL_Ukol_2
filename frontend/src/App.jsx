@@ -3,16 +3,29 @@
  * Obsahuje správu stavu, routování a layout
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import Header from './components/Header';
 import ProductList from './components/ProductList';
 import ProductForm from './components/ProductForm';
 import CacheStats from './components/CacheStats';
+import Recommendations from './components/Recommendations';
 import Toast from './components/Toast';
 import './App.css';
 
 // API URL - při vývoji použije proxy, v produkci relativní cestu
 const API_URL = '/api';
+
+// Generování unikátního ID uživatele pro sledování napříč sessions
+const getUserId = () => {
+  let userId = localStorage.getItem('userId');
+  if (!userId) {
+    userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    localStorage.setItem('userId', userId);
+  }
+  return userId;
+};
+
+const USER_ID = getUserId();
 
 function App() {
   // Stav aplikace
@@ -44,12 +57,52 @@ function App() {
   // Toast notifikace
   const [toast, setToast] = useState(null);
 
+  // Nedávno zobrazené a doporučené produkty z backendu
+  const [recentProducts, setRecentProducts] = useState([]);
+  const [recommendedProducts, setRecommendedProducts] = useState([]);
+
   /**
    * Zobrazí toast notifikaci
    */
   const showToast = (message, type = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
+  };
+
+  /**
+   * Načte nedávno navštívené produkty z backendu
+   */
+  const fetchRecentProducts = async () => {
+    try {
+      const response = await fetch(`${API_URL}/products/recommendations/recent?limit=6`, {
+        headers: { 'x-user-id': USER_ID }
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        setRecentProducts(data.data);
+      }
+    } catch (err) {
+      console.error('Chyba při načítání nedávno navštívených produktů:', err);
+    }
+  };
+
+  /**
+   * Načte doporučené produkty z backendu
+   */
+  const fetchRecommendedProducts = async () => {
+    try {
+      const response = await fetch(`${API_URL}/products/recommendations/suggested?limit=6`, {
+        headers: { 'x-user-id': USER_ID }
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        setRecommendedProducts(data.data);
+      }
+    } catch (err) {
+      console.error('Chyba při načítání doporučených produktů:', err);
+    }
   };
 
   /**
@@ -153,6 +206,20 @@ function App() {
   };
 
   /**
+   * Uloží produkt do seznamu nedávno zobrazených
+   */
+  const rememberProduct = useCallback(async (product) => {
+    if (!product || !product.id) {
+      return;
+    }
+
+    // Aktualizace proběhne automaticky na backendu při volání GET /api/products/:id
+    // Znovu načteme doporučení
+    await fetchRecentProducts();
+    await fetchRecommendedProducts();
+  }, []);
+
+  /**
    * Vytvoří nebo aktualizuje produkt
    */
   const handleSaveProduct = async (productData) => {
@@ -227,11 +294,14 @@ function App() {
    */
   const handleViewProduct = async (productId) => {
     try {
-      const response = await fetch(`${API_URL}/products/${productId}`);
+      const response = await fetch(`${API_URL}/products/${productId}`, {
+        headers: { 'x-user-id': USER_ID }
+      });
       const data = await response.json();
       
       if (data.success) {
         setLastCacheStatus(data.fromCache);
+        await rememberProduct(data.data);
         showToast(
           data.fromCache 
             ? `📗 Cache HIT - Produkt načten z Redis cache`
@@ -253,6 +323,8 @@ function App() {
   useEffect(() => {
     fetchCategories();
     fetchCacheStats();
+    fetchRecentProducts();
+    fetchRecommendedProducts();
     
     // Aktualizace cache statistik každých 5 sekund
     const interval = setInterval(fetchCacheStats, 5000);
@@ -263,6 +335,13 @@ function App() {
   useEffect(() => {
     setPagination(prev => ({ ...prev, page: 1 }));
   }, [search, selectedCategory]);
+
+  // Aktualizace doporučení při změně produktů
+  useEffect(() => {
+    if (recentProducts.length > 0) {
+      fetchRecommendedProducts();
+    }
+  }, [recentProducts]);
 
   return (
     <div className="app">
@@ -289,6 +368,11 @@ function App() {
       
       {/* Hlavní obsah - seznam produktů */}
       <main className="main-content">
+        <Recommendations
+          recentProducts={recentProducts}
+          recommendedProducts={recommendedProducts}
+          onView={handleViewProduct}
+        />
         <ProductList 
           products={products}
           loading={loading}

@@ -29,7 +29,9 @@ Product Catalog je moderní e-shop aplikace, která demonstruje použití Redis 
 - 📂 **Filtrování** podle kategorií
 - 📄 **Stránkování** pro efektivní zobrazení velkého množství produktů
 - 📊 **Cache statistiky** v reálném čase (hit/miss rate)
-- 🎨 **Responzivní UI** optimalizované pro všechna zařízení
+- � **Personalizované doporučování** - sledování nedávno navštívených produktů a inteligentní doporučení
+- 👁️ **Historie prohlížení** - ukládání návštěv produktů v Redis
+- �🎨 **Responzivní UI** optimalizované pro všechna zařízení
 
 ## 🛠 Technologie
 
@@ -103,6 +105,12 @@ docker-compose down -v
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Frontend (React)                        │
 │                      http://localhost:3000                      │
+│                                                                 │
+│  ┌───────────────────────────────────────────────────────────┐ │
+│  │  Recommendations Component                                 │ │
+│  │  • Nedávno zobrazené produkty                              │ │
+│  │  • Mohlo by se vám líbit                                   │ │
+│  └───────────────────────────────────────────────────────────┘ │
 └─────────────────────────────┬───────────────────────────────────┘
                               │
                               ▼
@@ -121,6 +129,8 @@ docker-compose down -v
 │   │  1. Kontrola Redis cache                                 │  │
 │   │  2. Cache HIT → vrať data z Redis                        │  │
 │   │  3. Cache MISS → načti z PostgreSQL → ulož do Redis      │  │
+│   │  4. Zaznamenej návštěvu produktu (Sorted Set)            │  │
+│   │  5. Aktualizuj zájmy uživatele (kategorie)               │  │
 │   └─────────────────────────────────────────────────────────┘  │
 └───────────────┬─────────────────────────────┬───────────────────┘
                 │                             │
@@ -129,6 +139,14 @@ docker-compose down -v
 │     Redis Stack           │   │        PostgreSQL             │
 │   (Cache, TTL: 10 min)    │   │    (Persistentní data)        │
 │   http://localhost:6379   │   │    localhost:5432             │
+│                           │   │                               │
+│  Cache keys:              │   │  Tables:                      │
+│  • product:{id}           │   │  • products                   │
+│  • products:list:*        │   │                               │
+│                           │   │                               │
+│  User tracking:           │   │                               │
+│  • user:{id}:recent       │   │                               │
+│  • user:{id}:interests    │   │                               │
 └───────────────────────────┘   └───────────────────────────────┘
 ```
 
@@ -141,6 +159,8 @@ docker-compose down -v
 | GET | `/api/products` | Seznam produktů (s stránkováním a filtry) |
 | GET | `/api/products/:id` | Detail produktu |
 | GET | `/api/products/categories` | Seznam kategorií |
+| GET | `/api/products/recommendations/recent` | Nedávno navštívené produkty |
+| GET | `/api/products/recommendations/suggested` | Doporučené produkty |
 | POST | `/api/products` | Vytvoření produktu |
 | PUT | `/api/products/:id` | Aktualizace produktu |
 | DELETE | `/api/products/:id` | Smazání produktu |
@@ -177,6 +197,39 @@ Redis cache slouží k:
 1. **Snížení zátěže databáze** - Opakované dotazy jsou obslouženy z paměti
 2. **Urychlení odezvy** - Redis je in-memory databáze s latencí < 1ms
 3. **Škálovatelnost** - Databáze může obsluhovat více uživatelů
+4. **Personalizace** - Sledování návštěv uživatelů pro doporučování
+
+### Cache strategie (Cache-Aside Pattern)
+
+```
+1. Klient požádá o produkt
+2. Backend zkontroluje Redis cache
+   ├── Cache HIT → vrať data z cache
+   └── Cache MISS → načti z PostgreSQL
+                    → ulož do Redis s TTL
+                    → vrať data
+3. Záznam návštěvy produktu do Redis Sorted Set
+4. Aktualizace zájmů uživatele (kategorie)
+```
+
+### Personalizace a doporučování
+
+#### Sledování návštěv
+- **Struktura:** Redis Sorted Set s časovým razítkem jako score
+- **Klíč:** `user:{userId}:recent`
+- **Kapacita:** Posledních 50 návštěv
+- **Expirace:** 30 dní
+
+#### Doporučení produktů
+- **Algoritmus:** Na základě kategorie navštívených produktů
+- **Vyloučení:** Nedávno zobrazené produkty se nezobrazují jako doporučení
+- **Randomizace:** Produkty jsou náhodně seřazeny pro rozmanitost
+
+#### Zájmy uživatele
+- **Struktura:** JSON s kategoriemi a počtem návštěv
+- **Klíč:** `user:{userId}:interests`
+- **Limity:** Top 10 kategorií
+- **Použití:** Generování personalizovaných doporučení
 
 ### Cache strategie (Cache-Aside Pattern)
 
@@ -200,6 +253,18 @@ Cache je automaticky invalidována při:
 - **Aktualizaci produktu** (PUT)
 - **Smazání produktu** (DELETE)
 - **Vytvoření produktu** (seznamy)
+
+### API endpointy pro doporučování
+
+```bash
+# Nedávno navštívené produkty
+curl http://localhost:3001/api/products/recommendations/recent \
+  -H "x-user-id: user123"
+
+# Doporučené produkty
+curl http://localhost:3001/api/products/recommendations/suggested \
+  -H "x-user-id: user123"
+```
 
 ## 🧪 Testování
 
@@ -230,6 +295,21 @@ Cache je automaticky invalidována při:
 3. **Statistiky:**
    - Sledujte sekci "Redis Cache Statistiky"
    - Hit Rate ukazuje efektivitu cache
+
+### Test doporučování
+
+1. **Vytvoření historie:**
+   - Klikněte na "Cache test" u několika produktů z různých kategorií
+   - Například: 3x Elektronika, 2x Knihy
+
+2. **Nedávno zobrazené:**
+   - V sekci "Nedávno zobrazené" se objeví produkty, které jste navštívili
+   - Seřazeny od nejnovějších
+
+3. **Doporučení:**
+   - V sekci "Mohlo by se vám líbit" se objeví produkty ze stejných kategorií
+   - Vyloučeny jsou produkty, které jste již viděli
+   - Při dalších návštěvách se doporučení adaptují
 
 ### Příklad API testování
 
